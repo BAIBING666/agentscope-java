@@ -25,15 +25,21 @@ import io.agentscope.builder.runtime.session.SessionKind;
 import io.agentscope.builder.runtime.session.SessionResetPolicy;
 import io.agentscope.builder.runtime.session.SessionView;
 import io.agentscope.builder.runtime.session.SpawnResult;
+import io.agentscope.builder.web.workspace.UserSandboxRegistry;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.gateway.ChannelManager;
 import io.agentscope.harness.agent.gateway.Gateway;
 import io.agentscope.harness.agent.gateway.MsgContext;
 import io.agentscope.harness.agent.gateway.SessionTurnGate;
 import io.agentscope.harness.agent.gateway.channel.OutboundAddress;
+import io.agentscope.harness.agent.sandbox.Sandbox;
+import io.agentscope.harness.agent.sandbox.SandboxContext;
+import io.agentscope.harness.agent.workspace.WorkspaceManager;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -126,6 +132,17 @@ public final class HarnessGateway implements Gateway {
      */
     private volatile BiFunction<String, String, String> fsUserIdResolver =
             (callerUserId, agentId) -> callerUserId;
+
+    /**
+     * Optional per-{@code (userId, agentId)} sandbox registry used when
+     * {@code builder.sandbox.enabled=true}. When set, every run/announce turn borrows the user's
+     * live container and attaches it to the {@link RuntimeContext} as
+     * {@link SandboxContext#getExternalSandbox() SandboxContext.externalSandbox} (Priority-1
+     * acquire in {@code SandboxManager}), so the agent runtime reuses the same container the
+     * browser workspace controllers read/write through — no state divergence, and browsing works
+     * outside of an agent call. {@code null} in non-sandbox deployments.
+     */
+    private volatile UserSandboxRegistry userSandboxRegistry;
 
     private final SessionTurnGate sessionTurnGate = new SessionTurnGate();
 
@@ -250,6 +267,17 @@ public final class HarnessGateway implements Gateway {
     }
 
     /**
+     * Installs the per-{@code (userId, agentId)} sandbox registry used in sandbox mode. When set,
+     * each inbound turn borrows the caller's live container and attaches it as
+     * {@link SandboxContext#getExternalSandbox() SandboxContext.externalSandbox} so the agent runs
+     * against the same container the browser workspace controllers use. No-op when {@code null}
+     * (non-sandbox deployments).
+     */
+    public void setUserSandboxRegistry(UserSandboxRegistry userSandboxRegistry) {
+        this.userSandboxRegistry = userSandboxRegistry;
+    }
+
+    /**
      * Applies {@link #fsUserIdResolver} defensively: any null/blank/exception return falls back
      * to {@code callerUserId} so a misbehaving resolver cannot break the chat path.
      */
@@ -271,6 +299,46 @@ public final class HarnessGateway implements Gateway {
                     e.getMessage());
         }
         return callerUserId;
+    }
+
+    /**
+     * Borrows the per-{@code (userId, agentId)} sandbox from the registry (if configured) and
+     * attaches it to the {@link RuntimeContext} as a
+     * {@link SandboxContext#getExternalSandbox() external sandbox}, so {@code SandboxManager.acquire}
+     * takes its Priority-1 path and the agent runs against the same container the browser workspace
+     * controllers use. The agent's host workspace root is passed as the projection source so a
+     * fresh container sees the seed content (AGENTS.md, skills/, subagents/). No-op when the
+     * registry is unconfigured or {@code userId} is missing. Failures are logged and swallowed so
+     * the chat path falls back to the default sandbox context rather than failing the turn.
+     */
+    private void attachUserSandboxContext(
+            RuntimeContext.Builder builder, String userId, String agentId, HarnessAgent ha) {
+        UserSandboxRegistry registry = this.userSandboxRegistry;
+        if (registry == null || userId == null || userId.isBlank()) {
+            return;
+        }
+        Path hostWorkspaceRoot = null;
+        WorkspaceManager wm = ha != null ? ha.getWorkspaceManager() : null;
+        if (wm != null && wm.getWorkspace() != null) {
+            hostWorkspaceRoot = wm.getWorkspace();
+        }
+        try {
+            Sandbox sb = registry.borrow(userId, agentId, hostWorkspaceRoot);
+            SandboxContext sandboxCtx =
+                    SandboxContext.builder()
+                            .externalSandbox(sb)
+                            .isolationScope(IsolationScope.USER)
+                            .build();
+            builder.put(SandboxContext.class, sandboxCtx);
+        } catch (RuntimeException e) {
+            log.warn(
+                    "[gateway] Failed to borrow sandbox for user={}, agent={} — agent turn will"
+                            + " fall back to the default SandboxContext: {}",
+                    userId,
+                    agentId,
+                    e.getMessage(),
+                    e);
+        }
     }
 
     /**
@@ -325,6 +393,7 @@ public final class HarnessGateway implements Gateway {
         if (fsUserId != null && !fsUserId.isBlank()) {
             rtcBuilder.userId(fsUserId);
         }
+        attachUserSandboxContext(rtcBuilder, fsUserId, routedAgentId, ha);
         RuntimeContext runtimeContext = rtcBuilder.build();
         return withGatedTurn(gateKey, () -> ha.call(messages, runtimeContext));
     }
@@ -408,6 +477,7 @@ public final class HarnessGateway implements Gateway {
         if (fsUserId != null && !fsUserId.isBlank()) {
             ctxBuilder.userId(fsUserId);
         }
+        attachUserSandboxContext(ctxBuilder, fsUserId, routedAgentId, ha);
         RuntimeContext ctx = ctxBuilder.build();
 
         OutboundAddress lastRoute = lastRouteBySessionKey.get(requesterKey);

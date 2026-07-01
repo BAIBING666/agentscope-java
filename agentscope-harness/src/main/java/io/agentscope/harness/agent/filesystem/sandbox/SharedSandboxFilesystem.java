@@ -13,14 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.workspace;
+package io.agentscope.harness.agent.filesystem.sandbox;
 
 import io.agentscope.core.agent.RuntimeContext;
-import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.ExecuteResponse;
 import io.agentscope.harness.agent.filesystem.model.FileDownloadResponse;
 import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;
-import io.agentscope.harness.agent.filesystem.sandbox.BaseSandboxFilesystem;
 import io.agentscope.harness.agent.sandbox.ExecResult;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxException;
@@ -35,21 +33,24 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * {@link AbstractFilesystem} that delegates to a fixed {@link Sandbox} reference owned by
- * {@link UserSandboxRegistry}.
+ * A {@link BaseSandboxFilesystem} that delegates to a fixed {@link Sandbox} reference owned
+ * directly by the caller.
  *
  * <p>Used by browser-side controllers (workspace tree, file read/write, upload) so the UI sees
- * exactly the same files the agent does. Unlike {@link
- * io.agentscope.harness.agent.filesystem.sandbox.SandboxBackedFilesystem} — which is a stable
- * proxy whose sandbox is flipped per-call by {@code
- * io.agentscope.harness.agent.middleware.SandboxLifecycleMiddleware} — this filesystem holds
- * the sandbox directly, because controllers are not inside an agent-call lifecycle and have
- * no middleware to do the flip for them.
+ * exactly the same files the agent does. Unlike {@link SandboxBackedFilesystem} — which is a
+ * stable proxy whose {@code sandbox} is flipped per-call by {@code
+ * io.agentscope.harness.agent.middleware.SandboxLifecycleMiddleware} — this filesystem holds the
+ * sandbox directly, because controllers are not inside an agent-call lifecycle and have no
+ * middleware to do the flip for them.
  *
- * <p>The exec/upload/download mapping mirrors {@code SandboxBackedFilesystem} exactly; we don't
- * subclass it because that class implements {@link io.agentscope.harness.agent.sandbox.SandboxAware}
- * and relies on a mutable {@code sandbox} field, which is the wrong contract here (a sandbox
- * supplied to the registry must not be silently overwritten).
+ * <p>The same {@link Sandbox} instance is typically shared with the agent runtime via
+ * {@link io.agentscope.harness.agent.sandbox.SandboxContext#getExternalSandbox() SandboxContext.externalSandbox}
+ * (Priority-1 acquire in {@code SandboxManager}), so browsing and agent turns read/write one
+ * container — there is no state divergence between what the UI shows and what the agent sees.
+ *
+ * <p>The exec/upload/download mapping mirrors {@link SandboxBackedFilesystem}; this class does not
+ * implement {@link io.agentscope.harness.agent.sandbox.SandboxAware} because the sandbox is fixed
+ * for the lifetime of this filesystem and must not be overwritten by the lifecycle middleware.
  */
 public final class SharedSandboxFilesystem extends BaseSandboxFilesystem {
 

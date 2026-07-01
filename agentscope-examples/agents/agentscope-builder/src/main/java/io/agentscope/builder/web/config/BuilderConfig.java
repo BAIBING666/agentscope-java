@@ -19,6 +19,8 @@ import io.agentscope.builder.runtime.BuilderBootstrap;
 import io.agentscope.builder.runtime.config.ChannelConfigEntry;
 import io.agentscope.builder.web.toolbus.ToolEventBus;
 import io.agentscope.builder.web.toolbus.ToolNotificationMiddleware;
+import io.agentscope.builder.web.workspace.UserSandboxRegistry;
+import io.agentscope.builder.web.workspace.WorkspaceManagerFactory;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.state.InMemoryAgentStateStore;
@@ -32,18 +34,24 @@ import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.gateway.channel.ChannelConfig;
 import io.agentscope.harness.agent.gateway.channel.DmScope;
 import io.agentscope.harness.agent.gateway.channel.chatui.ChatUiChannel;
+import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerFilesystemSpec;
+import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClient;
+import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClientOptions;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.Optional;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -135,6 +143,12 @@ public class BuilderConfig {
     @Value("${builder.sandbox.memory-bytes:1073741824}")
     private long sandboxMemoryBytes;
 
+    @Value("${builder.sandbox.idle-ttl-min:15}")
+    private long sandboxIdleTtlMinutes;
+
+    @Value("${builder.sandbox.eviction-poll-sec:60}")
+    private long sandboxEvictionPollSeconds;
+
     // -----------------------------------------------------------------
     //  Model bean — only created when an api-key is set AND no other
     //  Model bean is already present in the context. The conditional
@@ -204,7 +218,8 @@ public class BuilderConfig {
             Optional<Model> modelOpt,
             ToolEventBus toolEventBus,
             BaseStore baseStore,
-            Optional<AgentStateStore> sessionOpt)
+            Optional<AgentStateStore> sessionOpt,
+            ObjectProvider<UserSandboxRegistry> sandboxRegistryProvider)
             throws IOException {
         Path cwd = resolveCwd();
         ensureAgentscopeConfig();
@@ -256,19 +271,31 @@ public class BuilderConfig {
                     stateStore.getClass().getSimpleName());
         }
 
+        // In sandbox mode, build a single shared DockerSandboxClient + options so the agent's
+        // DockerFilesystemSpec and the UserSandboxRegistry (browser + externalSandbox path) use
+        // the same Docker store. The registry bean is created conditionally via
+        // builderSandboxClientOptions()/builderSandboxRegistry() below; here we just fetch it.
+        UserSandboxRegistry sandboxRegistry = sandboxRegistryProvider.getIfAvailable();
+        SandboxClient<DockerSandboxClientOptions> sharedSandboxClient =
+                sandboxRegistry != null ? builderSandboxClient() : null;
+
         builder.configureAllAgents(
                 b -> {
                     b.middleware(new ToolNotificationMiddleware(toolEventBus));
                     b.stateStore(stateStore);
                     if (sandboxEnabled) {
-                        b.filesystem(
+                        DockerFilesystemSpec spec =
                                 new DockerFilesystemSpec()
                                         .image(sandboxImage)
                                         .workspaceRoot(sandboxWorkspaceRoot)
                                         .network(sandboxNetwork)
                                         .cpuCount(sandboxCpuCount)
-                                        .memorySizeBytes(sandboxMemoryBytes)
-                                        .isolationScope(effectiveIsolation));
+                                        .memorySizeBytes(sandboxMemoryBytes);
+                        if (sharedSandboxClient != null) {
+                            spec.client(sharedSandboxClient);
+                        }
+                        spec.isolationScope(effectiveIsolation);
+                        b.filesystem(spec);
                     } else if (localStore) {
                         b.filesystem(new LocalFilesystemSpec().isolationScope(IsolationScope.USER));
                     } else {
@@ -280,6 +307,13 @@ public class BuilderConfig {
                 });
 
         BuilderBootstrap bootstrap = builder.build();
+
+        // Attach the per-user sandbox registry to the gateway so each agent turn injects the
+        // caller's live container as SandboxContext.externalSandbox (Priority-1 acquire), reusing
+        // the same container the browser workspace controllers read/write through.
+        if (sandboxRegistry != null) {
+            bootstrap.gateway().setUserSandboxRegistry(sandboxRegistry);
+        }
 
         // Build the chatui channel using the file-config's bindings & dmScope (if any),
         // so admin-edited bindings in agentscope.json are honored. Falls back to PER_PEER
@@ -322,6 +356,70 @@ public class BuilderConfig {
                                 () ->
                                         new IllegalStateException(
                                                 "ChatUiChannel not registered in ChannelManager"));
+    }
+
+    // -----------------------------------------------------------------
+    //  Sandbox-mode beans — only active when builder.sandbox.enabled=true.
+    //  The shared DockerSandboxClient + options are reused by both the
+    //  agent's DockerFilesystemSpec and the UserSandboxRegistry so the
+    //  browser browsing path and the agent runtime share one Docker store.
+    // -----------------------------------------------------------------
+
+    /**
+     * Shared Docker options derived from {@code builder.sandbox.*} properties. Exposed as a bean
+     * so both {@link #builderSandboxClient()} and {@link #builderSandboxRegistry} consume the
+     * same instance.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "builder.sandbox", name = "enabled", havingValue = "true")
+    public DockerSandboxClientOptions builderSandboxClientOptions() {
+        return new DockerSandboxClientOptions()
+                .image(sandboxImage)
+                .workspaceRoot(sandboxWorkspaceRoot)
+                .network(sandboxNetwork)
+                .cpuCount(sandboxCpuCount)
+                .memorySizeBytes(sandboxMemoryBytes);
+    }
+
+    /**
+     * Shared {@link DockerSandboxClient} used by the agent's {@link DockerFilesystemSpec} and
+     * {@link UserSandboxRegistry}. Operators may override by declaring their own
+     * {@code SandboxClient<DockerSandboxClientOptions>} bean.
+     */
+    @Bean
+    @ConditionalOnMissingBean(SandboxClient.class)
+    @ConditionalOnProperty(prefix = "builder.sandbox", name = "enabled", havingValue = "true")
+    public DockerSandboxClient builderSandboxClient() {
+        log.info("Wiring shared DockerSandboxClient for builder sandbox mode");
+        return new DockerSandboxClient();
+    }
+
+    /**
+     * Per-{@code (userId, agentId)} sandbox registry that keeps containers alive across browser
+     * requests and agent turns. Both the workspace controllers and the gateway's
+     * {@code externalSandbox} injection borrow from this registry so browsing and the agent
+     * runtime share one container.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "builder.sandbox", name = "enabled", havingValue = "true")
+    public UserSandboxRegistry builderSandboxRegistry(
+            SandboxClient<DockerSandboxClientOptions> sandboxClient,
+            DockerSandboxClientOptions clientOptions) {
+        Duration idleTtl = Duration.ofMinutes(sandboxIdleTtlMinutes);
+        Duration evictionPoll = Duration.ofSeconds(sandboxEvictionPollSeconds);
+        log.info("Builder sandbox registry: idleTtl={}, evictionPoll={}", idleTtl, evictionPoll);
+        return new UserSandboxRegistry(sandboxClient, clientOptions, idleTtl, evictionPoll);
+    }
+
+    /**
+     * Browser-side workspace factory backed by {@link UserSandboxRegistry}. Injected into
+     * {@link io.agentscope.builder.web.api.AgentWorkspaceController} so file browsing in sandbox
+     * mode reads/writes the same persistent container the agent uses.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "builder.sandbox", name = "enabled", havingValue = "true")
+    public WorkspaceManagerFactory builderWorkspaceManagerFactory(UserSandboxRegistry registry) {
+        return new WorkspaceManagerFactory(registry);
     }
 
     // -----------------------------------------------------------------

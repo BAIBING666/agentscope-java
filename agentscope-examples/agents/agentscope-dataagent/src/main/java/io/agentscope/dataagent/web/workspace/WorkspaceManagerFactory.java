@@ -16,6 +16,7 @@
 package io.agentscope.dataagent.web.workspace;
 
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
+import io.agentscope.harness.agent.filesystem.sandbox.SharedSandboxFilesystem;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.nio.file.Path;

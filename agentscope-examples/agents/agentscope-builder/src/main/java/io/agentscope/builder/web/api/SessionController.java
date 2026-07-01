@@ -71,14 +71,18 @@ public class SessionController {
     private final SessionAgentManager sessionAgentManager;
     private final SessionReadStateStore readStateStore;
     private final AgentCatalogService catalogService;
+    private final io.agentscope.builder.web.workspace.SandboxWorkspaceResolver
+            sandboxWorkspaceResolver;
 
     public SessionController(
             BuilderBootstrap builderBootstrap,
             SessionReadStateStore readStateStore,
-            AgentCatalogService catalogService) {
+            AgentCatalogService catalogService,
+            io.agentscope.builder.web.workspace.SandboxWorkspaceResolver sandboxWorkspaceResolver) {
         this.sessionAgentManager = builderBootstrap.gateway().sessionAgentManager();
         this.readStateStore = readStateStore;
         this.catalogService = catalogService;
+        this.sandboxWorkspaceResolver = sandboxWorkspaceResolver;
     }
 
     @GetMapping("/inbox")
@@ -286,7 +290,7 @@ public class SessionController {
                         AgentDefinition.SCOPE_USER.equals(def.scope())
                                 ? (def.ownerId() != null ? def.ownerId() : userId)
                                 : userId;
-                WorkspaceManager wm = agent.workspaceFor(ctxUser, null);
+                WorkspaceManager wm = sandboxWorkspaceResolver.resolveWithAgent(agent, ctxUser);
                 // Must match the segment SessionTree writes under: MemoryFlushHook reads
                 // `agent.getName()` (the ReActAgent delegate name), not the random UUID
                 // returned by getAgentId(). Mirrors claw's SessionController.

@@ -135,15 +135,19 @@ public class AgentToolsController {
     private final AgentActivityStore activity;
     private final AgentCatalogService catalogService;
     private final List<McpCatalogEntry> mcpCatalog;
+    private final io.agentscope.builder.web.workspace.SandboxWorkspaceResolver
+            sandboxWorkspaceResolver;
 
     public AgentToolsController(
             AgentAccessGuard guard,
             AgentActivityStore activity,
-            AgentCatalogService catalogService) {
+            AgentCatalogService catalogService,
+            io.agentscope.builder.web.workspace.SandboxWorkspaceResolver sandboxWorkspaceResolver) {
         this.guard = guard;
         this.activity = activity;
         this.catalogService = catalogService;
         this.mcpCatalog = loadMcpCatalog();
+        this.sandboxWorkspaceResolver = sandboxWorkspaceResolver;
     }
 
     // -----------------------------------------------------------------
@@ -390,15 +394,7 @@ public class AgentToolsController {
      * any routed-prefix writes would land in.
      */
     private WorkspaceManager resolveWorkspaceManager(String userId, String agentId) {
-        HarnessAgent agent = catalogService.getOrInstantiateRunningAgent(userId, agentId);
-        if (agent == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent not found");
-        }
-        WorkspaceManager manager = agent.getWorkspaceManager();
-        if (manager == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent workspace not found");
-        }
-        return manager;
+        return sandboxWorkspaceResolver.resolve(userId, agentId);
     }
 
     private static List<McpCatalogEntry> loadMcpCatalog() {

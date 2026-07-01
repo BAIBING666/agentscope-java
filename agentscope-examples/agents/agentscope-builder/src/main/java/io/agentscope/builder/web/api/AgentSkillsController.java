@@ -110,16 +110,20 @@ public class AgentSkillsController {
     private final AgentActivityStore activity;
     private final AgentCatalogService catalogService;
     private final UserMarketplaceRegistry marketplaceRegistry;
+    private final io.agentscope.builder.web.workspace.SandboxWorkspaceResolver
+            sandboxWorkspaceResolver;
 
     public AgentSkillsController(
             AgentAccessGuard guard,
             AgentActivityStore activity,
             AgentCatalogService catalogService,
-            UserMarketplaceRegistry marketplaceRegistry) {
+            UserMarketplaceRegistry marketplaceRegistry,
+            io.agentscope.builder.web.workspace.SandboxWorkspaceResolver sandboxWorkspaceResolver) {
         this.guard = guard;
         this.activity = activity;
         this.catalogService = catalogService;
         this.marketplaceRegistry = marketplaceRegistry;
+        this.sandboxWorkspaceResolver = sandboxWorkspaceResolver;
     }
 
     // -----------------------------------------------------------------
@@ -547,7 +551,7 @@ public class AgentSkillsController {
                             ? def.ownerId()
                             : catalogService.findOwnerOf(agentId).orElse(userId);
         }
-        return new OwnerCtx(ownerId, agent.workspaceFor(ownerId, null));
+        return new OwnerCtx(ownerId, sandboxWorkspaceResolver.resolveWithAgent(agent, ownerId));
     }
 
     /** Read-only filesystem for browsing — RUN-tier callers, no owner mutation. */
@@ -560,7 +564,7 @@ public class AgentSkillsController {
                 catalogService.isGlobal(agentId)
                         ? userId
                         : catalogService.findOwnerOf(agentId).orElse(userId);
-        return agent.workspaceFor(ctxUser, null).getFilesystem();
+        return sandboxWorkspaceResolver.resolveWithAgent(agent, ctxUser).getFilesystem();
     }
 
     private static void writeResources(

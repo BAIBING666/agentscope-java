@@ -59,12 +59,18 @@ public class AgentCloneController {
     private final AgentCatalogService catalog;
     private final AgentAccessGuard guard;
     private final AgentActivityStore activity;
+    private final io.agentscope.builder.web.workspace.SandboxWorkspaceResolver
+            sandboxWorkspaceResolver;
 
     public AgentCloneController(
-            AgentCatalogService catalog, AgentAccessGuard guard, AgentActivityStore activity) {
+            AgentCatalogService catalog,
+            AgentAccessGuard guard,
+            AgentActivityStore activity,
+            io.agentscope.builder.web.workspace.SandboxWorkspaceResolver sandboxWorkspaceResolver) {
         this.catalog = catalog;
         this.guard = guard;
         this.activity = activity;
+        this.sandboxWorkspaceResolver = sandboxWorkspaceResolver;
     }
 
     @PostMapping
@@ -99,8 +105,13 @@ public class AgentCloneController {
                                 HttpStatus.NOT_FOUND, "Agent unavailable after clone preparation");
                     }
                     AbstractFilesystem srcFs =
-                            srcAgent.workspaceFor(srcOwnerId, null).getFilesystem();
-                    AbstractFilesystem dstFs = dstAgent.workspaceFor(userId, null).getFilesystem();
+                            sandboxWorkspaceResolver
+                                    .resolveWithAgent(srcAgent, srcOwnerId)
+                                    .getFilesystem();
+                    AbstractFilesystem dstFs =
+                            sandboxWorkspaceResolver
+                                    .resolveWithAgent(dstAgent, userId)
+                                    .getFilesystem();
 
                     int copied =
                             WorkspaceCopier.copy(

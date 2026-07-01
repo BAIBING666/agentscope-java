@@ -23,6 +23,7 @@ import io.agentscope.builder.web.catalog.AgentCatalogService;
 import io.agentscope.builder.web.catalog.AgentDefinition;
 import io.agentscope.builder.web.share.AgentAccessGuard;
 import io.agentscope.builder.web.share.AgentAclService.Tier;
+import io.agentscope.builder.web.workspace.WorkspaceManagerFactory;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
@@ -106,13 +107,23 @@ public class AgentWorkspaceController {
     private final AgentAccessGuard guard;
     private final AgentActivityStore activity;
 
+    /**
+     * Sandbox-mode browsing factory; {@code null} in non-sandbox deployments. When set, the
+     * controller resolves its {@link WorkspaceManager} from this factory (backed by a persistent
+     * per-(user, agent) sandbox) instead of {@link HarnessAgent#workspaceFor(String, String)},
+     * whose {@code SandboxBackedFilesystem} proxy only has a live sandbox during an agent call.
+     */
+    private final WorkspaceManagerFactory workspaceManagerFactory;
+
     public AgentWorkspaceController(
             AgentCatalogService catalogService,
             AgentAccessGuard guard,
-            AgentActivityStore activity) {
+            AgentActivityStore activity,
+            @org.springframework.lang.Nullable WorkspaceManagerFactory workspaceManagerFactory) {
         this.catalogService = catalogService;
         this.guard = guard;
         this.activity = activity;
+        this.workspaceManagerFactory = workspaceManagerFactory;
     }
 
     // -----------------------------------------------------------------
@@ -713,6 +724,21 @@ public class AgentWorkspaceController {
             ctxUser = def.ownerId() != null ? def.ownerId() : userId;
         } else {
             ctxUser = userId;
+        }
+        // In sandbox mode the agent's filesystem is a SandboxBackedFilesystem proxy whose sandbox
+        // is only live during a call. Browsing happens outside of a call, so route through the
+        // shared persistent sandbox from WorkspaceManagerFactory instead. The key
+        // (ctxUser, agent.getAgentId()) matches what the gateway uses for externalSandbox
+        // injection, so browsing and agent turns share one container.
+        if (workspaceManagerFactory != null) {
+            Path hostWorkspaceRoot =
+                    agent.getWorkspaceManager() != null
+                            ? agent.getWorkspaceManager().getWorkspace()
+                            : null;
+            WorkspaceManager wm =
+                    workspaceManagerFactory.forAgent(
+                            ctxUser, agent.getAgentId(), hostWorkspaceRoot);
+            return new WorkspaceContext(wm.getWorkspace().normalize(), wm, ctxUser);
         }
         WorkspaceManager wm = agent.workspaceFor(ctxUser, null);
         return new WorkspaceContext(wm.getWorkspace().normalize(), wm, ctxUser);
