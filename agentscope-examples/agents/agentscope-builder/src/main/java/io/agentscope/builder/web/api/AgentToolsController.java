@@ -394,11 +394,11 @@ public class AgentToolsController {
         if (agent == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent not found");
         }
-        String ctxUser =
-                catalogService.isGlobal(agentId)
-                        ? userId
-                        : catalogService.findOwnerOf(agentId).orElse(userId);
-        return agent.workspaceFor(ctxUser, null);
+        WorkspaceManager manager = agent.getWorkspaceManager();
+        if (manager == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent workspace not found");
+        }
+        return manager;
     }
 
     private static List<McpCatalogEntry> loadMcpCatalog() {

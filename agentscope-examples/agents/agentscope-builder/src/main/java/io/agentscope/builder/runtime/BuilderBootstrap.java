@@ -111,6 +111,7 @@ public final class BuilderBootstrap {
     private final List<Channel> registeredChannels;
     private final HarnessGateway gateway;
     private final ChannelManager channelManager;
+    private final List<Consumer<HarnessAgent.Builder>> globalConfigurators;
 
     private BuilderBootstrap(
             Path cwd,
@@ -120,7 +121,8 @@ public final class BuilderBootstrap {
             AgentscopeConfig loadedConfig,
             List<Channel> registeredChannels,
             HarnessGateway gateway,
-            ChannelManager channelManager) {
+            ChannelManager channelManager,
+            List<Consumer<HarnessAgent.Builder>> globalConfigurators) {
         this.cwd = Objects.requireNonNull(cwd, "cwd");
         this.configPath = Objects.requireNonNull(configPath, "configPath");
         this.mainAgentId = Objects.requireNonNull(mainAgentId, "mainAgentId");
@@ -130,6 +132,8 @@ public final class BuilderBootstrap {
                 registeredChannels != null ? List.copyOf(registeredChannels) : List.of();
         this.gateway = gateway;
         this.channelManager = channelManager;
+        this.globalConfigurators =
+                globalConfigurators != null ? List.copyOf(globalConfigurators) : List.of();
     }
 
     // -----------------------------------------------------------------
@@ -245,6 +249,17 @@ public final class BuilderBootstrap {
     /** The channel manager for channel lifecycle and outbound delivery. */
     public ChannelManager channelManager() {
         return channelManager;
+    }
+
+    /** Applies the same global agent customizers used for startup agents to a runtime-built one. */
+    public void configureRuntimeAgent(HarnessAgent.Builder builder) {
+        Objects.requireNonNull(builder, "builder");
+        log.info(
+                "Applying {} global agent customizer(s) to runtime-built agent",
+                globalConfigurators.size());
+        for (Consumer<HarnessAgent.Builder> customizer : globalConfigurators) {
+            customizer.accept(builder);
+        }
     }
 
     /**
@@ -647,7 +662,8 @@ public final class BuilderBootstrap {
                     fileConfig,
                     resolvedChannels,
                     gateway,
-                    channelMgr);
+                    channelMgr,
+                    globalConfigurators);
         }
 
         private static Path resolveAgentWorkspace(Path cwd, AgentConfigEntry entry) {

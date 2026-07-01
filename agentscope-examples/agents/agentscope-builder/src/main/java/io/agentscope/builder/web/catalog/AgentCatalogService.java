@@ -864,6 +864,8 @@ public class AgentCatalogService {
         b.middleware(
                 new io.agentscope.builder.web.toolbus.ToolNotificationMiddleware(toolEventBus));
 
+        builderBootstrap.configureRuntimeAgent(b);
+
         HarnessAgent agent = b.build();
 
         HarnessGateway gateway = builderBootstrap.gateway();

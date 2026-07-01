@@ -32,6 +32,7 @@ import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.gateway.channel.ChannelConfig;
 import io.agentscope.harness.agent.gateway.channel.DmScope;
 import io.agentscope.harness.agent.gateway.channel.chatui.ChatUiChannel;
+import io.agentscope.harness.agent.sandbox.impl.docker.DockerFilesystemSpec;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -112,6 +113,27 @@ public class BuilderConfig {
 
     @Value("${builder.workspace:${claw.workspace:}}")
     private String workspaceDir;
+
+    @Value("${builder.sandbox.enabled:false}")
+    private boolean sandboxEnabled;
+
+    @Value("${builder.sandbox.image:agentscope/python-sandbox:py311-slim}")
+    private String sandboxImage;
+
+    @Value("${builder.sandbox.network:none}")
+    private String sandboxNetwork;
+
+    @Value("${builder.sandbox.workspace-root:/workspace}")
+    private String sandboxWorkspaceRoot;
+
+    @Value("${builder.sandbox.isolation:USER}")
+    private String sandboxIsolation;
+
+    @Value("${builder.sandbox.cpu-count:1}")
+    private long sandboxCpuCount;
+
+    @Value("${builder.sandbox.memory-bytes:1073741824}")
+    private long sandboxMemoryBytes;
 
     // -----------------------------------------------------------------
     //  Model bean — only created when an api-key is set AND no other
@@ -208,11 +230,23 @@ public class BuilderConfig {
                     AgentStateStore.class.getName());
         }
 
+        IsolationScope effectiveIsolation = parseIsolationScope(sandboxIsolation);
+
         // RemoteFilesystemSpec requires a distributed AgentStateStore; when the effective store is
         // local (InMemory/JsonFile), use LocalFilesystemSpec instead so the harness won't reject
         // the topology at build time.
         boolean localStore = isLocalStateStore(stateStore);
-        if (localStore) {
+        if (sandboxEnabled) {
+            log.info(
+                    "Builder sandbox enabled: image={}, network={}, workspaceRoot={},"
+                            + " isolation={}, cpuCount={}, memoryBytes={}",
+                    sandboxImage,
+                    sandboxNetwork,
+                    sandboxWorkspaceRoot,
+                    effectiveIsolation,
+                    sandboxCpuCount,
+                    sandboxMemoryBytes);
+        } else if (localStore) {
             log.info(
                     "Effective AgentStateStore is local ({}); using LocalFilesystemSpec.",
                     stateStore.getClass().getSimpleName());
@@ -226,7 +260,16 @@ public class BuilderConfig {
                 b -> {
                     b.middleware(new ToolNotificationMiddleware(toolEventBus));
                     b.stateStore(stateStore);
-                    if (localStore) {
+                    if (sandboxEnabled) {
+                        b.filesystem(
+                                new DockerFilesystemSpec()
+                                        .image(sandboxImage)
+                                        .workspaceRoot(sandboxWorkspaceRoot)
+                                        .network(sandboxNetwork)
+                                        .cpuCount(sandboxCpuCount)
+                                        .memorySizeBytes(sandboxMemoryBytes)
+                                        .isolationScope(effectiveIsolation));
+                    } else if (localStore) {
                         b.filesystem(new LocalFilesystemSpec().isolationScope(IsolationScope.USER));
                     } else {
                         b.filesystem(
@@ -293,6 +336,21 @@ public class BuilderConfig {
      */
     private static boolean isLocalStateStore(AgentStateStore store) {
         return store instanceof InMemoryAgentStateStore || store instanceof JsonFileAgentStateStore;
+    }
+
+    private static IsolationScope parseIsolationScope(String value) {
+        if (value == null || value.isBlank()) {
+            return IsolationScope.USER;
+        }
+        try {
+            return IsolationScope.valueOf(value.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    "Invalid builder.sandbox.isolation value '"
+                            + value
+                            + "'. Expected one of USER, SESSION, AGENT, GLOBAL.",
+                    e);
+        }
     }
 
     private Path resolveCwd() {
