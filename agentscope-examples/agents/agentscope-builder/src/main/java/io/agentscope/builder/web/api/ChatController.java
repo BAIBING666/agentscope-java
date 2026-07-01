@@ -34,6 +34,7 @@ import io.agentscope.builder.web.toolbus.ToolEventBus;
 import io.agentscope.builder.web.usage.UsageStore;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.model.ChatUsage;
 import io.agentscope.harness.agent.gateway.MsgContext;
 import io.agentscope.harness.agent.gateway.channel.InboundMessage;
 import io.agentscope.harness.agent.gateway.channel.chatui.ChatUiChannel;
@@ -496,9 +497,37 @@ public class ChatController {
 
         final String recordedAgentId = agentId != null ? agentId : "(default)";
         return call.doOnSuccess(
-                reply ->
-                        usageStore.record(
-                                userId, recordedAgentId, System.currentTimeMillis() - startMs));
+                reply -> {
+                    long durationMs = System.currentTimeMillis() - startMs;
+                    usageStore.record(userId, recordedAgentId, durationMs);
+                    logTokenUsage(userId, recordedAgentId, reply, durationMs);
+                });
+    }
+
+    private void logTokenUsage(String userId, String agentId, Msg reply, long durationMs) {
+        ChatUsage usage = reply != null ? reply.getUsage() : null;
+        if (usage == null && reply != null) {
+            usage = reply.getChatUsage();
+        }
+        if (usage == null) {
+            log.info(
+                    "Chat token usage: userId={}, agentId={}, durationMs={}, usage=unavailable",
+                    userId,
+                    agentId,
+                    durationMs);
+            return;
+        }
+        log.info(
+                "Chat token usage: userId={}, agentId={}, inputTokens={}, outputTokens={},"
+                        + " cachedTokens={}, totalTokens={}, modelTimeSeconds={}, durationMs={}",
+                userId,
+                agentId,
+                usage.getInputTokens(),
+                usage.getOutputTokens(),
+                usage.getCachedTokens(),
+                usage.getTotalTokens(),
+                usage.getTime(),
+                durationMs);
     }
 
     private ServerSentEvent<String> sse(String eventType, Object data) {
