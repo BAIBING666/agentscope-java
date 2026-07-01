@@ -17,9 +17,9 @@
 # ---------------------------------------------------------------------------
 spring:
   datasource:
-    url: ${BUILDER_DB_URL:jdbc:mysql://10.206.16.8:3306/ccagentscope_builder?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=UTC}
+    url: ${BUILDER_DB_URL:jdbc:mysql://localhost:3306/agentscope_builder?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=UTC}
     username: ${BUILDER_DB_USER:root}
-    password: ${BUILDER_DB_PASSWORD:chicheng@168}
+    password: ${BUILDER_DB_PASSWORD:123456}
     driver-class-name: ${BUILDER_DB_DRIVER:com.mysql.cj.jdbc.Driver}
 
   jpa:

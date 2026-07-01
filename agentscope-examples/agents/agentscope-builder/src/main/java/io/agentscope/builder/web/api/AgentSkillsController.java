@@ -134,7 +134,7 @@ public class AgentSkillsController {
                 () -> {
                     guard.require(userId, agentId, Tier.RUN);
                     AbstractFilesystem fs = resolveFilesystem(userId, agentId);
-                    LsResult ls = fs.ls(null, "/skills");
+                    LsResult ls = fs.ls(null, "skills");
                     if (ls == null || !ls.isSuccess() || ls.entries() == null) {
                         return List.<WorkspaceSkillInfo>of();
                     }
@@ -160,7 +160,7 @@ public class AgentSkillsController {
                     guard.require(userId, agentId, Tier.RUN);
                     validateSkillName(name);
                     AbstractFilesystem fs = resolveFilesystem(userId, agentId);
-                    String markdown = readUtf8(fs, "/skills/" + name + "/SKILL.md");
+                    String markdown = readUtf8(fs, "skills/" + name + "/SKILL.md");
                     if (markdown == null) {
                         throw new ResponseStatusException(
                                 HttpStatus.NOT_FOUND, "SKILL.md missing for: " + name);
@@ -224,11 +224,11 @@ public class AgentSkillsController {
                     validateSkillName(name);
                     OwnerCtx ctx = resolveOwner(userId, agentId, def);
                     AbstractFilesystem fs = ctx.workspaceManager().getFilesystem();
-                    if (!fs.exists(null, "/skills/" + name)) {
+                    if (!fs.exists(null, "skills/" + name)) {
                         throw new ResponseStatusException(
                                 HttpStatus.NOT_FOUND, "Skill not found: " + name);
                     }
-                    fs.delete(null, "/skills/" + name);
+                    fs.delete(null, "skills/" + name);
                     activity.record(
                             ctx.ownerId(),
                             agentId,
@@ -364,14 +364,14 @@ public class AgentSkillsController {
 
                     OwnerCtx ctx = resolveOwner(userId, agentId, def);
                     AbstractFilesystem fs = ctx.workspaceManager().getFilesystem();
-                    if (fs.exists(null, "/skills/" + targetName)
+                    if (fs.exists(null, "skills/" + targetName)
                             && !Boolean.TRUE.equals(req.overwrite())) {
                         throw new ResponseStatusException(
                                 HttpStatus.CONFLICT,
                                 "Workspace skill already exists: " + targetName);
                     }
-                    if (fs.exists(null, "/skills/" + targetName)) {
-                        fs.delete(null, "/skills/" + targetName);
+                    if (fs.exists(null, "skills/" + targetName)) {
+                        fs.delete(null, "skills/" + targetName);
                     }
                     String markdown = skill.getSkillContent();
                     if (markdown == null || markdown.isBlank()) {
@@ -458,14 +458,14 @@ public class AgentSkillsController {
 
                     OwnerCtx ctx = resolveOwner(userId, agentId, def);
                     AbstractFilesystem fs = ctx.workspaceManager().getFilesystem();
-                    if (fs.exists(null, "/skills/" + targetName)
+                    if (fs.exists(null, "skills/" + targetName)
                             && !Boolean.TRUE.equals(req.overwrite())) {
                         throw new ResponseStatusException(
                                 HttpStatus.CONFLICT,
                                 "Workspace skill already exists: " + targetName);
                     }
-                    if (fs.exists(null, "/skills/" + targetName)) {
-                        fs.delete(null, "/skills/" + targetName);
+                    if (fs.exists(null, "skills/" + targetName)) {
+                        fs.delete(null, "skills/" + targetName);
                     }
                     if (content.markdown() == null || content.markdown().isBlank()) {
                         throw new ResponseStatusException(
@@ -589,7 +589,7 @@ public class AgentSkillsController {
     }
 
     private static WorkspaceSkillInfo readWorkspaceSkill(AbstractFilesystem fs, String dirName) {
-        String content = readUtf8(fs, "/skills/" + dirName + "/SKILL.md");
+        String content = readUtf8(fs, "skills/" + dirName + "/SKILL.md");
         if (content == null) return null;
         String description = parseFrontMatterField(content, DESCRIPTION_LINE);
         String name = parseFrontMatterField(content, NAME_LINE);
@@ -605,14 +605,14 @@ public class AgentSkillsController {
                 description,
                 size.totalBytes(),
                 size.resourceCount(),
-                fs.exists(null, "/skills/" + dirName + "/references"),
-                fs.exists(null, "/skills/" + dirName + "/scripts"),
+                fs.exists(null, "skills/" + dirName + "/references"),
+                fs.exists(null, "skills/" + dirName + "/scripts"),
                 origin,
                 meta);
     }
 
     private static SkillMarketplaceMeta readInstallMeta(AbstractFilesystem fs, String dirName) {
-        String json = readUtf8(fs, "/skills/" + dirName + "/" + INSTALL_META_FILE);
+        String json = readUtf8(fs, "skills/" + dirName + "/" + INSTALL_META_FILE);
         if (json == null || json.isBlank()) return null;
         try {
             return MAPPER.readValue(json, SkillMarketplaceMeta.class);
@@ -625,8 +625,8 @@ public class AgentSkillsController {
         Map<String, String> out = new LinkedHashMap<>();
         walk(
                 fs,
-                "/skills/" + dirName,
-                "/skills/" + dirName + "/",
+                "skills/" + dirName,
+                "skills/" + dirName + "/",
                 (relativePath, absolutePath) -> {
                     if (relativePath.equals("SKILL.md") || relativePath.equals(INSTALL_META_FILE)) {
                         return;
@@ -642,8 +642,8 @@ public class AgentSkillsController {
         int[] count = new int[] {0};
         walk(
                 fs,
-                "/skills/" + dirName,
-                "/skills/" + dirName + "/",
+                "skills/" + dirName,
+                "skills/" + dirName + "/",
                 (relativePath, absolutePath) -> {
                     if (relativePath.equals(INSTALL_META_FILE)) return;
                     total[0] += fileSize(fs, absolutePath);

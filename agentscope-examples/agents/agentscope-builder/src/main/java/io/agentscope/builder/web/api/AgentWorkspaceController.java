@@ -141,7 +141,7 @@ public class AgentWorkspaceController {
                     guard.require(userId, agentId, Tier.EDIT);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
-                    if (!fs.exists(FS_RC, "/AGENTS.md")) {
+                    if (!fs.exists(FS_RC, "AGENTS.md")) {
                         String displayName = agentName.isBlank() ? agentId : agentName;
                         String body = "# " + displayName + "\n\nYou are " + displayName + ".\n";
                         fs.uploadFiles(
@@ -179,7 +179,7 @@ public class AgentWorkspaceController {
                         }
                     }
                     List<DailyMemoryFile> dailyFiles = new ArrayList<>();
-                    LsResult ls = fs.ls(rc, "/memory");
+                    LsResult ls = fs.ls(rc, "memory");
                     if (ls.isSuccess() && ls.entries() != null) {
                         ls.entries().stream()
                                 .filter(fi -> !fi.isDirectory() && fi.path().endsWith(".md"))
@@ -210,13 +210,13 @@ public class AgentWorkspaceController {
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     if (recursive) {
-                        GlobResult gr = fs.glob(FS_RC, "**/*", "/");
+                        GlobResult gr = fs.glob(FS_RC, "**/*", ".");
                         if (!gr.isSuccess() || gr.matches() == null) {
                             return List.<FileNode>of();
                         }
                         return buildTreeFromGlob(gr.matches());
                     }
-                    LsResult ls = fs.ls(FS_RC, "/");
+                    LsResult ls = fs.ls(FS_RC, ".");
                     if (!ls.isSuccess() || ls.entries() == null) {
                         return List.<FileNode>of();
                     }
@@ -233,12 +233,12 @@ public class AgentWorkspaceController {
                     guard.require(userId, agentId, Tier.RUN);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
-                    String abs = toAbsFsPath(path);
-                    if (!fs.exists(FS_RC, abs)) {
+                    String fsPath = toFsPath(path);
+                    if (!fs.exists(FS_RC, fsPath)) {
                         throw new ResponseStatusException(
                                 HttpStatus.NOT_FOUND, "File not found: " + path);
                     }
-                    ReadResult rr = fs.read(FS_RC, abs, 0, Integer.MAX_VALUE);
+                    ReadResult rr = fs.read(FS_RC, fsPath, 0, Integer.MAX_VALUE);
                     if (!rr.isSuccess() || rr.fileData() == null) {
                         throw new ResponseStatusException(
                                 HttpStatus.NOT_FOUND, "File not found: " + path);
@@ -272,14 +272,15 @@ public class AgentWorkspaceController {
                     guard.require(userId, agentId, Tier.EDIT);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
-                    String abs = toAbsFsPath(path);
+                    String fsPath = toFsPath(path);
                     String rel = toRelFsPath(path);
-                    boolean existedAsDir = fs.exists(FS_RC, abs.endsWith("/") ? abs : abs + "/");
+                    boolean existedAsDir =
+                            fs.exists(FS_RC, fsPath.endsWith("/") ? fsPath : fsPath + "/");
                     if (existedAsDir) {
                         throw new ResponseStatusException(
                                 HttpStatus.CONFLICT, "Path is a directory: " + path);
                     }
-                    boolean existed = fs.exists(FS_RC, abs);
+                    boolean existed = fs.exists(FS_RC, fsPath);
                     String content = req != null && req.content() != null ? req.content() : "";
                     byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
                     List<FileUploadResponse> ur =
@@ -326,10 +327,10 @@ public class AgentWorkspaceController {
                     }
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
-                    String abs = toAbsFsPath(path);
+                    String fsPath = toFsPath(path);
                     String rel = toRelFsPath(path);
-                    if (fs.exists(FS_RC, abs)
-                            || fs.exists(FS_RC, abs.endsWith("/") ? abs : abs + "/")) {
+                    if (fs.exists(FS_RC, fsPath)
+                            || fs.exists(FS_RC, fsPath.endsWith("/") ? fsPath : fsPath + "/")) {
                         throw new ResponseStatusException(
                                 HttpStatus.CONFLICT, "Already exists: " + path);
                     }
@@ -366,18 +367,18 @@ public class AgentWorkspaceController {
                     guard.require(userId, agentId, Tier.EDIT);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
-                    String absFrom = toAbsFsPath(req.from());
-                    String absTo = toAbsFsPath(req.to());
-                    if (!fs.exists(FS_RC, absFrom)) {
+                    String fromPath = toFsPath(req.from());
+                    String toPath = toFsPath(req.to());
+                    if (!fs.exists(FS_RC, fromPath)) {
                         throw new ResponseStatusException(
                                 HttpStatus.NOT_FOUND, "Source not found: " + req.from());
                     }
-                    if (fs.exists(FS_RC, absTo)
-                            || fs.exists(FS_RC, absTo.endsWith("/") ? absTo : absTo + "/")) {
+                    if (fs.exists(FS_RC, toPath)
+                            || fs.exists(FS_RC, toPath.endsWith("/") ? toPath : toPath + "/")) {
                         throw new ResponseStatusException(
                                 HttpStatus.CONFLICT, "Target already exists: " + req.to());
                     }
-                    WriteResult wr = fs.move(FS_RC, absFrom, absTo);
+                    WriteResult wr = fs.move(FS_RC, fromPath, toPath);
                     if (!wr.isSuccess()) {
                         throw new ResponseStatusException(
                                 HttpStatus.INTERNAL_SERVER_ERROR, "Move failed: " + wr.error());
@@ -406,13 +407,13 @@ public class AgentWorkspaceController {
                     guard.require(userId, agentId, Tier.EDIT);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
-                    String abs = toAbsFsPath(path);
-                    String absDir = abs.endsWith("/") ? abs : abs + "/";
-                    if (!fs.exists(FS_RC, abs) && !fs.exists(FS_RC, absDir)) {
+                    String fsPath = toFsPath(path);
+                    String dirPath = fsPath.endsWith("/") ? fsPath : fsPath + "/";
+                    if (!fs.exists(FS_RC, fsPath) && !fs.exists(FS_RC, dirPath)) {
                         throw new ResponseStatusException(
                                 HttpStatus.NOT_FOUND, "Not found: " + path);
                     }
-                    WriteResult wr = fs.delete(FS_RC, abs);
+                    WriteResult wr = fs.delete(FS_RC, fsPath);
                     if (!wr.isSuccess()) {
                         throw new ResponseStatusException(
                                 HttpStatus.INTERNAL_SERVER_ERROR, "Delete failed: " + wr.error());
@@ -444,10 +445,10 @@ public class AgentWorkspaceController {
                 .flatMap(
                         ctx -> {
                             String filename = sanitiseFilename(file.filename());
-                            String relDir = toAbsFsPath(path);
+                            String relDir = toFsPath(path);
                             // Build "dir/filename" relative path (no leading slash, for
                             // uploadFiles).
-                            String dirRel = relDir.equals("/") ? "" : relDir.substring(1);
+                            String dirRel = relDir.equals(".") ? "" : relDir;
                             if (!dirRel.isEmpty() && !dirRel.endsWith("/")) {
                                 dirRel = dirRel + "/";
                             }
@@ -523,7 +524,7 @@ public class AgentWorkspaceController {
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     RuntimeContext rc = RuntimeContext.empty();
-                    LsResult ls = fs.ls(rc, "/subagents");
+                    LsResult ls = fs.ls(rc, "subagents");
                     if (!ls.isSuccess() || ls.entries() == null) {
                         return List.<SubagentInfo>of();
                     }
@@ -720,27 +721,27 @@ public class AgentWorkspaceController {
     private record WorkspaceContext(Path workspace, WorkspaceManager manager, String ownerId) {}
 
     /**
-     * Normalizes a user-supplied workspace-relative path into an {@link AbstractFilesystem}
-     * absolute path (leading {@code /}). Strips any leading slashes from the caller, then routes
-     * through {@link AbstractFilesystem#validatePath(String)} which rejects {@code ..} traversal.
+     * Normalizes a user-supplied workspace path into the workspace-relative form accepted by both
+     * composite filesystems and {@code LocalFilesystem} ROOTED mode. Strips any leading slashes
+     * from the caller, then routes through {@link AbstractFilesystem#validatePath(String)} which
+     * rejects {@code ..} traversal.
      *
-     * <p>An empty or blank input maps to {@code "/"} (the workspace root) — useful for listing.
+     * <p>An empty or blank input maps to {@code "."} (the workspace root) — useful for listing.
      */
-    private static String toAbsFsPath(String userPath) {
+    private static String toFsPath(String userPath) {
         String p = userPath == null ? "" : userPath.trim();
         while (p.startsWith("/")) {
             p = p.substring(1);
         }
         if (p.isEmpty()) {
-            return "/";
+            return ".";
         }
-        String abs = "/" + p;
         try {
-            AbstractFilesystem.validatePath(abs);
+            AbstractFilesystem.validatePath("/" + p);
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
         }
-        return abs;
+        return p;
     }
 
     /**
@@ -749,12 +750,12 @@ public class AgentWorkspaceController {
      * paths everywhere else in the codebase.
      */
     private static String toRelFsPath(String userPath) {
-        String abs = toAbsFsPath(userPath);
-        if ("/".equals(abs)) {
+        String rel = toFsPath(userPath);
+        if (".".equals(rel)) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST, "Path is required for this operation");
         }
-        return abs.substring(1);
+        return rel;
     }
 
     private static String sanitiseFilename(String name) {
@@ -932,11 +933,11 @@ public class AgentWorkspaceController {
 
     private static WorkspaceSummary summarize(String agentId, WorkspaceContext ctx) {
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        boolean agentsMdExists = fs.exists(FS_RC, "/AGENTS.md");
-        boolean memoryMdExists = fs.exists(FS_RC, "/MEMORY.md");
-        int skillCount = countLs(fs, "/skills", true, null);
-        int subagentCount = countLs(fs, "/subagents", false, ".md");
-        int dailyMemoryCount = countLs(fs, "/memory", false, ".md");
+        boolean agentsMdExists = fs.exists(FS_RC, "AGENTS.md");
+        boolean memoryMdExists = fs.exists(FS_RC, "MEMORY.md");
+        int skillCount = countLs(fs, "skills", true, null);
+        int subagentCount = countLs(fs, "subagents", false, ".md");
+        int dailyMemoryCount = countLs(fs, "memory", false, ".md");
         // {@code exists} historically meant "the workspace directory is present on disk". With
         // composite/remote stores the per-caller workspace is logical, not physical — so use
         // "any expected file or directory present" as a proxy. This keeps the UI's empty-state

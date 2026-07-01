@@ -36,6 +36,7 @@ import io.agentscope.harness.agent.gateway.SessionTurnGate;
 import io.agentscope.harness.agent.gateway.channel.OutboundAddress;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -485,6 +486,77 @@ public final class HarnessGateway implements Gateway {
                     sessionKeyToAgentId.put(r.sessionKey(), aid);
                     return r.sessionKey();
                 });
+    }
+
+    /** Returns the currently active MAIN session for a gateway route, if one is registered. */
+    public Optional<String> currentMainSessionKey(String gateKey) {
+        if (gateKey == null || gateKey.isBlank()) {
+            return Optional.empty();
+        }
+        String sessionKey = contextKeyToSessionKey.get(gateKey);
+        if (sessionKey == null || sessionKey.isBlank()) {
+            return Optional.empty();
+        }
+        return sessionAgentManager
+                .getSession(sessionKey)
+                .filter(e -> e.kind() == SessionKind.MAIN)
+                .map(SessionEntry::sessionKey);
+    }
+
+    /**
+     * Makes an existing MAIN session the active session for a gateway route. This lets browser tabs
+     * continue an older session selected by {@code sessionKey} instead of always appending to the
+     * most recently created route session.
+     */
+    public boolean activateMainSession(String gateKey, String sessionKey, String userId) {
+        if (gateKey == null || gateKey.isBlank() || sessionKey == null || sessionKey.isBlank()) {
+            return false;
+        }
+        Optional<SessionEntry> maybe = sessionAgentManager.getSession(sessionKey.trim());
+        if (maybe.isEmpty()) {
+            return false;
+        }
+        SessionEntry entry = maybe.get();
+        if (entry.kind() != SessionKind.MAIN) {
+            return false;
+        }
+        if (!Objects.equals(entry.gateKey(), gateKey)) {
+            return false;
+        }
+        if (userId != null && !Objects.equals(entry.userId(), userId)) {
+            return false;
+        }
+        contextKeyToSessionKey.put(gateKey, entry.sessionKey());
+        sessionKeyToGateKey.put(entry.sessionKey(), gateKey);
+        sessionKeyToAgentId.put(entry.sessionKey(), entry.agentId());
+        return true;
+    }
+
+    /** Creates and activates a new MAIN session for a gateway route without deleting older ones. */
+    public SpawnResult startNewMainSession(String gateKey, String requestedAgentId, String userId) {
+        if (gateKey == null || gateKey.isBlank()) {
+            return new SpawnResult(
+                    null, null, null, null, requestedAgentId, "error", "Missing gateKey");
+        }
+        HarnessAgent ha = resolveAgent(requestedAgentId);
+        if (ha == null) {
+            return new SpawnResult(
+                    null,
+                    null,
+                    null,
+                    null,
+                    requestedAgentId,
+                    "error",
+                    "HarnessGateway.bindMainAgent must be called before starting a session");
+        }
+        String aid = resolveAgentId(ha);
+        SpawnResult result = sessionAgentManager.registerMainSession(aid, null, gateKey, userId);
+        if ("ok".equals(result.status())) {
+            contextKeyToSessionKey.put(gateKey, result.sessionKey());
+            sessionKeyToGateKey.put(result.sessionKey(), gateKey);
+            sessionKeyToAgentId.put(result.sessionKey(), aid);
+        }
+        return result;
     }
 
     private boolean isSessionFresh(String sessionKey) {

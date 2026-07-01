@@ -33,6 +33,15 @@ export async function currentSession(agentId: string): Promise<CurrentSession> {
   return res.json();
 }
 
+export async function startNewSession(agentId: string): Promise<CurrentSession> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/chat/session/new`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(`Failed to start new session: ${res.status}`);
+  return res.json();
+}
+
 export async function* stream(agentId: string, req: ChatRequest): AsyncGenerator<ChatEvent> {
   const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/chat/stream`, {
     method: 'POST',

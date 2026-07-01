@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { currentSession, stream } from '../api/chat';
+import { currentSession, startNewSession, stream } from '../api/chat';
 import { TurnEntry, turns as fetchTurns } from '../api/sessions';
 import ToolCallBlock from './ToolCallBlock';
 
@@ -148,9 +148,7 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
           key = cur.sessionKey;
           exists = cur.exists;
         } else {
-          // We have a candidate; just check whether the backend has turns.
-          const cur = await currentSession(agentId);
-          exists = cur.exists && cur.sessionKey === key;
+          exists = true;
         }
       } catch {
         // ignore — a missing session is fine, we just start empty
@@ -259,27 +257,34 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
     }
   }
 
-  function handleNewChat() {
+  async function handleNewChat() {
     if (busy) return;
-    if (messages.length > 0 && !confirm('Start a new chat? The current thread will be cleared (a /reset will be sent to the agent).')) {
+    if (messages.length > 0 && !confirm('Start a new chat? The current conversation will be kept in All sessions.')) {
       return;
     }
-    setMessages([{
-      id: nextId(),
-      role: 'system',
-      text: 'New chat started. Previous turns have been cleared.',
-      tools: [],
-    }]);
-    // Send /reset in the background so the harness clears its in-memory turn history too.
-    (async () => {
-      try {
-        for await (const _ of stream(agentId, { message: '/reset', sessionKey: sessionKey ?? undefined })) {
-          // drain
-        }
-      } catch {
-        // best-effort
+    setBusy(true);
+    try {
+      const nextSession = await startNewSession(agentId);
+      setSessionKey(nextSession.sessionKey);
+      persistSession(nextSession.sessionKey);
+      setMessages([{
+        id: nextId(),
+        role: 'system',
+        text: 'New chat started. Previous conversation is still available in All sessions.',
+        tools: [],
+      }]);
+      if (nextSession.sessionKey) {
+        const next = new URLSearchParams(searchParams);
+        next.set('session', nextSession.sessionKey);
+        setSearchParams(next, { replace: true });
       }
-    })();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Failed to start new chat';
+      setMessages(prev => [...prev, { id: nextId(), role: 'system', text: `[error] ${msg}`, tools: [] }]);
+    } finally {
+      setBusy(false);
+      inputRef.current?.focus();
+    }
   }
 
   return (
@@ -307,7 +312,7 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
           style={S.iconBtn}
           onClick={handleNewChat}
           disabled={busy}
-          title="Clear this thread and start fresh"
+          title="Start a separate chat session"
         >
           ✨ New chat
         </button>

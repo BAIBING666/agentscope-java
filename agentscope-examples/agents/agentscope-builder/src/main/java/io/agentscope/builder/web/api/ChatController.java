@@ -18,9 +18,11 @@ package io.agentscope.builder.web.api;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.builder.runtime.BuilderBootstrap;
+import io.agentscope.builder.runtime.gateway.HarnessGateway;
 import io.agentscope.builder.runtime.session.SessionAgentManager;
 import io.agentscope.builder.runtime.session.SessionEntry;
 import io.agentscope.builder.runtime.session.SessionKind;
+import io.agentscope.builder.runtime.session.SpawnResult;
 import io.agentscope.builder.web.audit.ActivityEvent;
 import io.agentscope.builder.web.audit.AgentActivityStore;
 import io.agentscope.builder.web.catalog.AgentCatalogService;
@@ -44,6 +46,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.Authentication;
@@ -53,6 +56,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
@@ -78,6 +82,7 @@ public class ChatController {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final ChatUiChannel chatUiChannel;
+    private final HarnessGateway gateway;
     private final SessionAgentManager sessionAgentManager;
     private final AgentCatalogService catalogService;
     private final IdentityLinkStore identityLinks;
@@ -103,7 +108,8 @@ public class ChatController {
             AgentAccessGuard guard,
             AgentActivityStore activity) {
         this.chatUiChannel = chatUiChannel;
-        this.sessionAgentManager = builderBootstrap.gateway().sessionAgentManager();
+        this.gateway = builderBootstrap.gateway();
+        this.sessionAgentManager = gateway.sessionAgentManager();
         this.catalogService = catalogService;
         this.identityLinks = identityLinks;
         this.usageStore = usageStore;
@@ -145,6 +151,8 @@ public class ChatController {
         String userId = (String) auth.getPrincipal();
         AgentDefinition def = guard.require(userId, agentId, Tier.RUN);
         recordRunSession(def, agentId, userId);
+        String gateKey = resolveGateKey(userId, agentId);
+        activateRequestedSession(userId, gateKey, req.sessionKey());
 
         // Slash commands short-circuit the agent and produce a synthetic single-token reply.
         CommandResult cmd = handleSlashCommand(userId, agentId, req.message());
@@ -158,8 +166,7 @@ public class ChatController {
         // turn the session has not yet been registered — fall back to a gateKey-resolved lookup
         // each time an event arrives so we pick up the sessionKey as soon as the gateway creates
         // it.
-        String gateKey = resolveGateKey(userId, agentId);
-        String existingSessionKey = findSessionKeyByGate(userId, gateKey);
+        String existingSessionKey = currentSessionKeyByGate(userId, gateKey);
         Sinks.One<Boolean> done = Sinks.one();
         Flux<ServerSentEvent<String>> toolEvents =
                 existingSessionKey != null
@@ -181,7 +188,7 @@ public class ChatController {
                                     done.tryEmitValue(true);
                                     Map<String, Object> doneFrame = new LinkedHashMap<>();
                                     doneFrame.put("type", "done");
-                                    String resolved = findSessionKeyByGate(userId, gateKey);
+                                    String resolved = currentSessionKeyByGate(userId, gateKey);
                                     if (resolved != null) {
                                         doneFrame.put("sessionKey", resolved);
                                     }
@@ -228,11 +235,39 @@ public class ChatController {
                     if (gateKey == null) {
                         return new CurrentSessionResponse(null, false);
                     }
-                    String sessionKey = findSessionKeyByGate(userId, gateKey);
+                    String sessionKey = currentSessionKeyByGate(userId, gateKey);
                     if (sessionKey == null) {
                         return new CurrentSessionResponse(null, false);
                     }
                     return new CurrentSessionResponse(sessionKey, true);
+                });
+    }
+
+    /** Starts a new main chat session while preserving older sessions in the session inbox. */
+    @PostMapping("/session/new")
+    public Mono<CurrentSessionResponse> newSession(
+            @PathVariable String agentId, Authentication auth) {
+        String userId = (String) auth.getPrincipal();
+        guard.require(userId, agentId, Tier.RUN);
+        return Mono.fromCallable(
+                () -> {
+                    String gateKey = resolveGateKey(userId, agentId);
+                    if (gateKey == null) {
+                        throw new ResponseStatusException(
+                                HttpStatus.BAD_REQUEST, "Unable to resolve chat route");
+                    }
+                    String gatewayAgentId = catalogService.resolveGatewayAgentId(userId, agentId);
+                    SpawnResult result =
+                            gateway.startNewMainSession(gateKey, gatewayAgentId, userId);
+                    if (!"ok".equals(result.status()) || result.sessionKey() == null) {
+                        throw new ResponseStatusException(
+                                HttpStatus.INTERNAL_SERVER_ERROR,
+                                result.error() != null
+                                        ? result.error()
+                                        : "Failed to start chat session");
+                    }
+                    startedSessions.remove(gateKey);
+                    return new CurrentSessionResponse(result.sessionKey(), true);
                 });
     }
 
@@ -243,17 +278,18 @@ public class ChatController {
         String userId = (String) auth.getPrincipal();
         AgentDefinition def = guard.require(userId, agentId, Tier.RUN);
         recordRunSession(def, agentId, userId);
+        String gateKey = resolveGateKey(userId, agentId);
+        activateRequestedSession(userId, gateKey, req.sessionKey());
         CommandResult cmd = handleSlashCommand(userId, agentId, req.message());
         if (cmd != null) {
             return Mono.just(new ChatResponse(cmd.message, null));
         }
-        String gateKey = resolveGateKey(userId, agentId);
         return executeChat(userId, agentId, req.message())
                 .map(
                         reply -> {
                             String text =
                                     reply.getTextContent() != null ? reply.getTextContent() : "";
-                            String sessionKey = findSessionKeyByGate(userId, gateKey);
+                            String sessionKey = currentSessionKeyByGate(userId, gateKey);
                             return new ChatResponse(text, sessionKey);
                         });
     }
@@ -341,6 +377,21 @@ public class ChatController {
         return null;
     }
 
+    private String currentSessionKeyByGate(String userId, String gateKey) {
+        return gateway.currentMainSessionKey(gateKey)
+                .orElseGet(() -> findSessionKeyByGate(userId, gateKey));
+    }
+
+    private void activateRequestedSession(String userId, String gateKey, String sessionKey) {
+        if (sessionKey == null || sessionKey.isBlank()) {
+            return;
+        }
+        boolean ok = gateway.activateMainSession(gateKey, sessionKey.trim(), userId);
+        if (!ok) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat session not found");
+        }
+    }
+
     /**
      * If {@code message} is a recognised slash command, applies the side-effect (e.g. resets the
      * session for this user+agent pair) and returns a synthetic confirmation reply. Returns
@@ -362,7 +413,7 @@ public class ChatController {
                     if (gateKey == null) {
                         return new CommandResult("No active session to reset.");
                     }
-                    String sessionKey = findSessionKeyByGate(userId, gateKey);
+                    String sessionKey = currentSessionKeyByGate(userId, gateKey);
                     if (sessionKey == null) {
                         // No session registered yet — there's nothing to clear, which from the
                         // user's perspective is effectively a fresh start. Drop the dedupe
